@@ -18,9 +18,7 @@ function twoFactorRequiredResponse(message: string = 'Two factor required.'): Re
       error_description: message,
       TwoFactorProviders: [0],
       TwoFactorProviders2: {
-        '0': {
-          Priority: 1,
-        },
+        '0': null,
       },
       ErrorModel: {
         Message: message,
@@ -115,6 +113,10 @@ export async function handleToken(request: Request, env: Env): Promise<Response>
     // Optional 2FA: enabled only when TOTP_SECRET is configured in Workers env.
     let trustedTwoFactorTokenToReturn: string | undefined;
     if (isTotpEnabled(env.TOTP_SECRET)) {
+      if (twoFactorProvider !== undefined && String(twoFactorProvider) !== '0') {
+        return identityErrorResponse('Unsupported two-factor provider', 'invalid_grant', 400);
+      }
+
       const rememberRequested = ['1', 'true', 'True', 'TRUE', 'on', 'yes', 'Yes', 'YES'].includes(String(twoFactorRemember || '').trim());
 
       // Bitwarden may reuse twoFactorToken as a remembered-device token on subsequent logins.
@@ -142,7 +144,7 @@ export async function handleToken(request: Request, env: Env): Promise<Response>
               429
             );
           }
-          return identityErrorResponse('Invalid two-factor token', 'invalid_grant', 400);
+          return twoFactorRequiredResponse();
         }
       }
 
@@ -286,4 +288,31 @@ export async function handlePrelogin(request: Request, env: Env): Promise<Respon
     kdfMemory: kdfMemory,
     kdfParallelism: kdfParallelism,
   });
+}
+
+// POST /identity/connect/revocation
+// Best-effort OAuth token revocation endpoint.
+// RFC 7009 allows returning 200 even if token is unknown.
+export async function handleRevocation(request: Request, env: Env): Promise<Response> {
+  const storage = new StorageService(env.DB);
+
+  let body: Record<string, string>;
+  const contentType = request.headers.get('content-type') || '';
+  try {
+    if (contentType.includes('application/x-www-form-urlencoded')) {
+      const formData = await request.formData();
+      body = Object.fromEntries(formData.entries()) as Record<string, string>;
+    } else {
+      body = await request.json();
+    }
+  } catch {
+    return new Response(null, { status: 200 });
+  }
+
+  const token = String(body.token || '').trim();
+  if (token) {
+    await storage.deleteRefreshToken(token);
+  }
+
+  return new Response(null, { status: 200 });
 }

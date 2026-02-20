@@ -8,10 +8,12 @@ import { LIMITS } from '../config/limits';
 interface CiphersImportRequest {
   ciphers: Array<{
     type: number;
-    name: string;
+    name?: string | null;
     notes?: string | null;
     favorite?: boolean;
     reprompt?: number;
+    sshKey?: any | null;
+    key?: string | null;
     login?: {
       uris?: Array<{ uri: string | null; match?: number | null }> | null;
       username?: string | null;
@@ -62,6 +64,7 @@ interface CiphersImportRequest {
       password: string;
       lastUsedDate: string;
     }> | null;
+    [key: string]: any;
   }>;
   folders: Array<{
     name: string;
@@ -153,61 +156,65 @@ export async function handleCiphersImport(request: Request, env: Env, userId: st
       userId: userId,
       type: c.type as CipherType,
       folderId: folderId,
-      name: c.name || 'Untitled',
-      notes: c.notes || null,
-      favorite: c.favorite || false,
+      name: c.name ?? 'Untitled',
+      notes: c.notes ?? null,
+      favorite: c.favorite ?? false,
       login: c.login ? {
         ...c.login,
-        username: c.login.username || null,
-        password: c.login.password || null,
+        username: c.login.username ?? null,
+        password: c.login.password ?? null,
         uris: c.login.uris?.map(u => ({
-          uri: u.uri || null,
+          ...u,
+          uri: u.uri ?? null,
           uriChecksum: null,
           match: u.match ?? null,
         })) || null,
-        totp: c.login.totp || null,
+        totp: c.login.totp ?? null,
         autofillOnPageLoad: c.login.autofillOnPageLoad ?? null,
         fido2Credentials: c.login.fido2Credentials ?? null,
         uri: c.login.uri ?? null,
         passwordRevisionDate: c.login.passwordRevisionDate ?? null,
       } : null,
       card: c.card ? {
-        cardholderName: c.card.cardholderName || null,
-        brand: c.card.brand || null,
-        number: c.card.number || null,
-        expMonth: c.card.expMonth || null,
-        expYear: c.card.expYear || null,
-        code: c.card.code || null,
+        ...c.card,
+        cardholderName: c.card.cardholderName ?? null,
+        brand: c.card.brand ?? null,
+        number: c.card.number ?? null,
+        expMonth: c.card.expMonth ?? null,
+        expYear: c.card.expYear ?? null,
+        code: c.card.code ?? null,
       } : null,
       identity: c.identity ? {
-        title: c.identity.title || null,
-        firstName: c.identity.firstName || null,
-        middleName: c.identity.middleName || null,
-        lastName: c.identity.lastName || null,
-        address1: c.identity.address1 || null,
-        address2: c.identity.address2 || null,
-        address3: c.identity.address3 || null,
-        city: c.identity.city || null,
-        state: c.identity.state || null,
-        postalCode: c.identity.postalCode || null,
-        country: c.identity.country || null,
-        company: c.identity.company || null,
-        email: c.identity.email || null,
-        phone: c.identity.phone || null,
-        ssn: c.identity.ssn || null,
-        username: c.identity.username || null,
-        passportNumber: c.identity.passportNumber || null,
-        licenseNumber: c.identity.licenseNumber || null,
+        ...c.identity,
+        title: c.identity.title ?? null,
+        firstName: c.identity.firstName ?? null,
+        middleName: c.identity.middleName ?? null,
+        lastName: c.identity.lastName ?? null,
+        address1: c.identity.address1 ?? null,
+        address2: c.identity.address2 ?? null,
+        address3: c.identity.address3 ?? null,
+        city: c.identity.city ?? null,
+        state: c.identity.state ?? null,
+        postalCode: c.identity.postalCode ?? null,
+        country: c.identity.country ?? null,
+        company: c.identity.company ?? null,
+        email: c.identity.email ?? null,
+        phone: c.identity.phone ?? null,
+        ssn: c.identity.ssn ?? null,
+        username: c.identity.username ?? null,
+        passportNumber: c.identity.passportNumber ?? null,
+        licenseNumber: c.identity.licenseNumber ?? null,
       } : null,
-      secureNote: c.secureNote || null,
+      secureNote: c.secureNote ?? null,
       fields: c.fields?.map(f => ({
-        name: f.name || null,
-        value: f.value || null,
+        ...f,
+        name: f.name ?? null,
+        value: f.value ?? null,
         type: f.type,
         linkedId: f.linkedId ?? null,
       })) || null,
-      passwordHistory: c.passwordHistory || null,
-      reprompt: c.reprompt || 0,
+      passwordHistory: c.passwordHistory ?? null,
+      reprompt: c.reprompt ?? 0,
       sshKey: (c as any).sshKey ?? null,
       key: (c as any).key ?? null,
       createdAt: now,

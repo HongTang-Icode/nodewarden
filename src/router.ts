@@ -5,7 +5,7 @@ import { handleCors, errorResponse, jsonResponse } from './utils/response';
 import { LIMITS } from './config/limits';
 
 // Identity handlers
-import { handleToken, handlePrelogin } from './handlers/identity';
+import { handleToken, handlePrelogin, handleRevocation } from './handlers/identity';
 
 // Account handlers
 import { handleRegister, handleGetProfile, handleUpdateProfile, handleSetKeys, handleGetRevisionDate, handleVerifyPassword } from './handlers/accounts';
@@ -227,6 +227,10 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     // Identity endpoints (no auth required)
     if (path === '/identity/connect/token' && method === 'POST') {
       return handleToken(request, env);
+    }
+
+    if ((path === '/identity/connect/revocation' || path === '/identity/connect/revoke') && method === 'POST') {
+      return handleRevocation(request, env);
     }
 
     if (path === '/identity/accounts/prelogin' && method === 'POST') {

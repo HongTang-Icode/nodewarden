@@ -2,7 +2,6 @@ import { User, Cipher, Folder, Attachment, Device } from '../types';
 import { LIMITS } from '../config/limits';
 
 const TWO_FACTOR_REMEMBER_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-const SCHEMA_HASH_CONFIG_KEY = 'schema_hash';
 
 // IMPORTANT:
 // Keep this schema list in sync with migrations/0001_init.sql.
@@ -123,29 +122,15 @@ export class StorageService {
   // --- Database initialization ---
   // Strategy:
   // - Run only once per isolate.
-  // - Persist schema hash in DB config; if unchanged, skip all schema SQL.
+  // - Execute idempotent schema SQL on first DB use in each isolate.
   // - Keep statements idempotent so updates are safe.
   async initializeDatabase(): Promise<void> {
     if (StorageService.schemaVerified) return;
 
     await this.db.prepare('PRAGMA foreign_keys = ON').run();
     await this.db.prepare('CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL)').run();
-
-    const schemaHash = await this.sha256Hex(SCHEMA_STATEMENTS.join('\n'));
-    const current = await this.db.prepare('SELECT value FROM config WHERE key = ?')
-      .bind(SCHEMA_HASH_CONFIG_KEY)
-      .first<{ value: string }>();
-
-    if (current?.value !== schemaHash) {
-      for (const stmt of SCHEMA_STATEMENTS) {
-        await this.executeSchemaStatement(stmt);
-      }
-
-      await this.db.prepare(
-        'INSERT INTO config(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
-      )
-        .bind(SCHEMA_HASH_CONFIG_KEY, schemaHash)
-        .run();
+    for (const stmt of SCHEMA_STATEMENTS) {
+      await this.executeSchemaStatement(stmt);
     }
 
     StorageService.schemaVerified = true;

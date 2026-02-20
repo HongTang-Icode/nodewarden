@@ -7,21 +7,6 @@ let dbInitialized = false;
 let dbInitError: string | null = null;
 let dbInitPromise: Promise<void> | null = null;
 
-function shouldSkipDatabaseInit(request: Request): boolean {
-  const url = new URL(request.url);
-  const path = url.pathname;
-  const method = request.method;
-
-  if (method === 'OPTIONS') return true;
-  if (method === 'GET' && (path === '/favicon.ico' || path === '/favicon.svg')) return true;
-  if (method === 'GET' && path === '/.well-known/appspecific/com.chrome.devtools.json') return true;
-  if (method === 'GET' && path.startsWith('/icons/')) return true;
-  if (path.startsWith('/notifications/')) return true;
-  if (method === 'GET' && (path === '/config' || path === '/api/config' || path === '/api/version')) return true;
-
-  return false;
-}
-
 async function ensureDatabaseInitialized(env: Env): Promise<void> {
   if (dbInitialized) return;
 
@@ -47,24 +32,20 @@ async function ensureDatabaseInitialized(env: Env): Promise<void> {
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     void ctx;
-    const requiresDatabase = !shouldSkipDatabaseInit(request);
-
-    if (requiresDatabase) {
-      await ensureDatabaseInitialized(env);
-      if (dbInitError) {
-        const resp = jsonResponse(
-          {
-            error: 'Database not initialized',
-            error_description: dbInitError,
-            ErrorModel: {
-              Message: dbInitError,
-              Object: 'error',
-            },
+    await ensureDatabaseInitialized(env);
+    if (dbInitError) {
+      const resp = jsonResponse(
+        {
+          error: 'Database not initialized',
+          error_description: dbInitError,
+          ErrorModel: {
+            Message: dbInitError,
+            Object: 'error',
           },
-          500
-        );
-        return applyCors(request, resp);
-      }
+        },
+        500
+      );
+      return applyCors(request, resp);
     }
 
     const resp = await handleRequest(request, env);
