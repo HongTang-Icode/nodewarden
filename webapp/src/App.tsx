@@ -25,10 +25,11 @@ import { buildSendShareKey, getSends } from '@/lib/api/send';
 import {
   getCiphers,
   getFolders,
+  repairCipherAttachmentMetadata,
   updateFolder,
 } from '@/lib/api/vault';
 import { silentlyRepairBackupSettingsIfNeeded } from '@/lib/backup-settings-repair';
-import { base64ToBytes, decryptBw, decryptStr } from '@/lib/crypto';
+import { base64ToBytes, decryptBw, decryptStr, encryptBw } from '@/lib/crypto';
 import {
   buildPublicSendUrl,
   deriveSendKeyParts,
@@ -84,8 +85,10 @@ const SIGNALR_UPDATE_TYPE_BACKUP_RESTORE_PROGRESS = 13;
 
 type ThemePreference = 'system' | 'light' | 'dark';
 type LockTimeoutMinutes = 0 | 1 | 5 | 15 | 30;
+type SessionTimeoutAction = 'lock' | 'logout';
 
 const LOCK_TIMEOUT_STORAGE_KEY = 'nodewarden.lock.timeout-minutes.v1';
+const SESSION_TIMEOUT_ACTION_STORAGE_KEY = 'nodewarden.session.timeout-action.v1';
 const LOCK_TIMEOUT_VALUES = new Set<LockTimeoutMinutes>([0, 1, 5, 15, 30]);
 
 function readThemePreference(): ThemePreference {
@@ -104,6 +107,12 @@ function readLockTimeoutMinutes(): LockTimeoutMinutes {
   if (typeof window === 'undefined') return 15;
   const value = Number(window.localStorage.getItem(LOCK_TIMEOUT_STORAGE_KEY));
   return LOCK_TIMEOUT_VALUES.has(value as LockTimeoutMinutes) ? (value as LockTimeoutMinutes) : 15;
+}
+
+function readSessionTimeoutAction(): SessionTimeoutAction {
+  if (typeof window === 'undefined') return 'lock';
+  const value = String(window.localStorage.getItem(SESSION_TIMEOUT_ACTION_STORAGE_KEY) || '').trim();
+  return value === 'logout' ? 'logout' : 'lock';
 }
 
 export default function App() {
@@ -151,6 +160,7 @@ export default function App() {
   const [themePreference, setThemePreference] = useState<ThemePreference>(() => readThemePreference());
   const [systemTheme, setSystemTheme] = useState<'light' | 'dark'>(() => resolveSystemTheme());
   const [lockTimeoutMinutes, setLockTimeoutMinutesState] = useState<LockTimeoutMinutes>(() => readLockTimeoutMinutes());
+  const [sessionTimeoutAction, setSessionTimeoutActionState] = useState<SessionTimeoutAction>(() => readSessionTimeoutAction());
   const [unlockPreparing, setUnlockPreparing] = useState(() => initialBootstrap.phase === 'locked' && !initialBootstrap.session?.email);
 
   const [confirm, setConfirm] = useState<AppConfirmState | null>(null);
@@ -217,7 +227,7 @@ export default function App() {
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
-    const media = window.matchMedia('(max-width: 900px)');
+    const media = window.matchMedia('(max-width: 1180px)');
     const sync = () => setMobileLayout(media.matches);
     sync();
     if (typeof media.addEventListener === 'function') {
@@ -269,6 +279,11 @@ export default function App() {
     window.localStorage.setItem(LOCK_TIMEOUT_STORAGE_KEY, String(lockTimeoutMinutes));
   }, [lockTimeoutMinutes]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(SESSION_TIMEOUT_ACTION_STORAGE_KEY, sessionTimeoutAction);
+  }, [sessionTimeoutAction]);
+
   function handleToggleTheme() {
     setThemePreference((prev) => {
       const current = prev === 'system' ? systemTheme : prev;
@@ -284,7 +299,12 @@ export default function App() {
 
   function setLockTimeoutMinutes(next: LockTimeoutMinutes) {
     setLockTimeoutMinutesState(next);
-    pushToast('success', t('txt_auto_lock_updated'));
+    pushToast('success', t('txt_session_timeout_updated'));
+  }
+
+  function setSessionTimeoutAction(next: SessionTimeoutAction) {
+    setSessionTimeoutActionState(next);
+    pushToast('success', t('txt_session_timeout_updated'));
   }
 
   const authedFetch = useMemo(
@@ -639,25 +659,32 @@ export default function App() {
         timerId = null;
       }
     };
-    const scheduleLock = () => {
+    const runTimeoutAction = () => {
+      if (sessionTimeoutAction === 'logout') {
+        logoutNow();
+        return;
+      }
+      if (sessionRef.current?.symEncKey || sessionRef.current?.symMacKey) {
+        lockCurrentSession();
+      }
+    };
+    const scheduleTimeout = () => {
       clearTimer();
       timerId = window.setTimeout(() => {
-        if (sessionRef.current?.symEncKey || sessionRef.current?.symMacKey) {
-          lockCurrentSession();
-        }
+        runTimeoutAction();
       }, timeoutMs);
     };
     const markActivity = () => {
       const now = Date.now();
       if (now - lastActivityAt < 1000) return;
       lastActivityAt = now;
-      scheduleLock();
+      scheduleTimeout();
     };
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') markActivity();
     };
 
-    scheduleLock();
+    scheduleTimeout();
     window.addEventListener('pointerdown', markActivity, { passive: true });
     window.addEventListener('keydown', markActivity);
     window.addEventListener('scroll', markActivity, { passive: true });
@@ -672,7 +699,7 @@ export default function App() {
       window.removeEventListener('touchstart', markActivity);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [phase, lockTimeoutMinutes]);
+  }, [phase, lockTimeoutMinutes, sessionTimeoutAction]);
 
   function renderPassiveOverlays() {
     return (
@@ -776,6 +803,34 @@ export default function App() {
             // Backward-compatibility: some records may already be plain text.
             return value;
           }
+        };
+        const sameBytes = (a: Uint8Array, b: Uint8Array) => {
+          if (a.byteLength !== b.byteLength) return false;
+          for (let i = 0; i < a.byteLength; i += 1) {
+            if (a[i] !== b[i]) return false;
+          }
+          return true;
+        };
+        const decryptFieldWithSource = async (
+          value: string | null | undefined,
+          itemEnc: Uint8Array,
+          itemMac: Uint8Array
+        ): Promise<{ text: string; source: 'item' | 'user' | 'plain' }> => {
+          const raw = String(value || '').trim();
+          if (!raw) return { text: '', source: 'plain' };
+          try {
+            return { text: await decryptStr(raw, itemEnc, itemMac), source: 'item' };
+          } catch {
+            // 继续尝试旧 user key 数据。
+          }
+          if (!sameBytes(itemEnc, encKey) || !sameBytes(itemMac, macKey)) {
+            try {
+              return { text: await decryptStr(raw, encKey, macKey), source: 'user' };
+            } catch {
+              // 保留原文。
+            }
+          }
+          return { text: raw, source: 'plain' };
         };
 
         const folders = await Promise.all(
@@ -882,10 +937,45 @@ export default function App() {
             }
             if (Array.isArray(cipher.attachments)) {
               nextCipher.attachments = await Promise.all(
-                cipher.attachments.map(async (attachment) => ({
-                  ...attachment,
-                  decFileName: await decryptField(attachment.fileName || '', itemEnc, itemMac),
-                }))
+                cipher.attachments.map(async (attachment) => {
+                  const attachmentId = String(attachment?.id || '').trim();
+                  const fileNameResult = await decryptFieldWithSource(attachment.fileName || '', itemEnc, itemMac);
+                  const metadata: { fileName?: string; key?: string | null } = {};
+
+                  if (attachmentId && fileNameResult.source === 'user') {
+                    metadata.fileName = await encryptBw(new TextEncoder().encode(fileNameResult.text), itemEnc, itemMac);
+                  }
+
+                  const attachmentKey = String(attachment?.key || '').trim();
+                  if (
+                    attachmentId &&
+                    attachmentKey &&
+                    looksLikeCipherString(attachmentKey) &&
+                    (!sameBytes(itemEnc, encKey) || !sameBytes(itemMac, macKey))
+                  ) {
+                    try {
+                      await decryptBw(attachmentKey, itemEnc, itemMac);
+                    } catch {
+                      try {
+                        const rawAttachmentKey = await decryptBw(attachmentKey, encKey, macKey);
+                        if (rawAttachmentKey.length >= 64) {
+                          metadata.key = await encryptBw(rawAttachmentKey, itemEnc, itemMac);
+                        }
+                      } catch {
+                        // 文件下载时会继续尝试旧格式。
+                      }
+                    }
+                  }
+
+                  if (attachmentId && Object.keys(metadata).length > 0) {
+                    void repairCipherAttachmentMetadata(authedFetch, cipher.id, attachmentId, metadata);
+                  }
+
+                  return {
+                    ...attachment,
+                    decFileName: fileNameResult.text,
+                  };
+                })
               );
             }
             return nextCipher;
@@ -1213,6 +1303,7 @@ export default function App() {
     invites: invitesQuery.data || [],
     totpEnabled: !!totpStatusQuery.data?.enabled,
     lockTimeoutMinutes,
+    sessionTimeoutAction,
     authorizedDevices: authorizedDevicesQuery.data || [],
     authorizedDevicesLoading: authorizedDevicesQuery.isFetching,
     onNavigate: navigate,
@@ -1260,6 +1351,7 @@ export default function App() {
     onGetApiKey: accountSecurityActions.getApiKey,
     onRotateApiKey: accountSecurityActions.rotateApiKey,
     onLockTimeoutChange: setLockTimeoutMinutes,
+    onSessionTimeoutActionChange: setSessionTimeoutAction,
     onRefreshAuthorizedDevices: accountSecurityActions.refreshAuthorizedDevices,
     onRenameAuthorizedDevice: accountSecurityActions.renameAuthorizedDevice,
     onRevokeDeviceTrust: accountSecurityActions.openRevokeDeviceTrust,
