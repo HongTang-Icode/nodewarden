@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'preact/hooks';
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { CheckCheck, ChevronLeft, Copy, Eye, EyeOff, File, FileText, LayoutGrid, Pencil, Plus, RefreshCw, Save, Send as SendIcon, Trash2, X } from 'lucide-preact';
 import { copyTextToClipboard } from '@/lib/clipboard';
+import LoadingState from '@/components/LoadingState';
 import type { Send, SendDraft } from '@/lib/types';
 import { t } from '@/lib/i18n';
 
@@ -79,6 +80,7 @@ export default function SendsPage(props: SendsPageProps) {
   const [isMobileLayout, setIsMobileLayout] = useState(getInitialIsMobileLayout);
   const [mobilePanel, setMobilePanel] = useState<'list' | 'detail' | 'edit'>('list');
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const mobileSidebarToggleKeyRef = useRef(props.mobileSidebarToggleKey);
   const [autoCopyLink, setAutoCopyLink] = useState<boolean>(() => {
     try {
       return localStorage.getItem(AUTO_COPY_KEY) === '1';
@@ -108,7 +110,8 @@ export default function SendsPage(props: SendsPageProps) {
   }, []);
 
   useEffect(() => {
-    if (!props.mobileSidebarToggleKey) return;
+    if (props.mobileSidebarToggleKey === mobileSidebarToggleKeyRef.current) return;
+    mobileSidebarToggleKeyRef.current = props.mobileSidebarToggleKey;
     setMobileSidebarOpen((open) => !open);
   }, [props.mobileSidebarToggleKey]);
 
@@ -221,8 +224,17 @@ export default function SendsPage(props: SendsPageProps) {
     }
   }
 
+  function getAccessUrl(send: Send): string {
+    const rawUrl = send.shareUrl || `/send/${send.accessId}`;
+    if (/^https?:\/\//i.test(rawUrl)) return rawUrl;
+    if (rawUrl.startsWith('/#/')) return `${window.location.origin}${rawUrl}`;
+    if (rawUrl.startsWith('#/')) return `${window.location.origin}/${rawUrl}`;
+    if (rawUrl.startsWith('/')) return `${window.location.origin}/#${rawUrl}`;
+    return `${window.location.origin}/#/${rawUrl.replace(/^\/+/, '')}`;
+  }
+
   function copyAccessUrl(send: Send): void {
-    const url = send.shareUrl || `${window.location.origin}/#/send/${send.accessId}`;
+    const url = getAccessUrl(send);
     void copyTextToClipboard(url, { successMessage: t('txt_link_copied') });
   }
 
@@ -320,6 +332,7 @@ export default function SendsPage(props: SendsPageProps) {
           </button>
         </div>
         <div className="list-panel">
+          {props.loading && !filteredSends.length && <LoadingState lines={6} compact />}
           {filteredSends.map((send, index) => (
             <div
               key={send.id}
@@ -373,7 +386,7 @@ export default function SendsPage(props: SendsPageProps) {
               </button>
             </div>
           ))}
-          {!filteredSends.length && <div className="empty">{t('txt_no_sends')}</div>}
+          {!props.loading && !filteredSends.length && <div className="empty">{t('txt_no_sends')}</div>}
         </div>
       </section>
 
@@ -551,6 +564,7 @@ export default function SendsPage(props: SendsPageProps) {
             </div>
           </div>
         )}
+        {!isEditing && !selectedSend && props.loading && <LoadingState card lines={4} />}
       </section>
     </div>
   );
